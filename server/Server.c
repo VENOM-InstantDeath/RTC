@@ -3,6 +3,7 @@
 #include <pthread.h>
 #include <string.h>
 #include <stdlib.h>
+#include <json.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -10,24 +11,32 @@
 
 struct argst {
 	char* strs[1];
-	int* sockfd;
+	int sockfd;
 };
 
 void *threadfunc(void *arg) {
 	struct argst *args = (struct argst*)arg;
 	const char* address = *(args->strs);
-	int sockfd = *(args->sockfd);
+	int sockfd = args->sockfd;
 	fd_set readfd;
 	FD_ZERO(&readfd);
 	FD_SET(sockfd, &readfd);
 	while (1) {
+		// {"request": "start-session"}
+		// {"request": "join-session", "code": "your-code"}
+		// {""}
 		char* buffer = calloc(20, 1);
 		int selerr = pselect(sockfd+1, &readfd, NULL, NULL, NULL, NULL);
 		if (selerr) {
 			printf("Data available on %s\n", address);
 			read(sockfd, buffer, 20);
 			if (!strlen(buffer)) break;
-			printf("Length of msg is %d\n", strlen(buffer));
+			struct json_object *jobj, *key;
+			jobj = json_tokener_parse(buffer);
+			puts(json_object_to_json_string_ext(jobj, JSON_C_TO_STRING_PRETTY));
+			json_object_object_get_ex(jobj, "request", &key);
+			const char* req = json_object_get_string(key);
+			if (!strcmp(req, "start-session"));
 		}
 		free(buffer);
 	}
