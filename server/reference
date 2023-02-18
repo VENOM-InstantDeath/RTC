@@ -1,0 +1,17 @@
+struct argst;
+
+int randint(int a, int b);
+
+void *communicator(int sockfd) {
+	while (1) {read requests loop}
+}
+
+void *threadfm(void *arg); //arg is struct argst
+
+void *cleanup();
+
+int main() {
+	if (!pid) {process code
+		while(1) {unix accept code}}
+	while (1) {tcp/ip accept code}
+}
