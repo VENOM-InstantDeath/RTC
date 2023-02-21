@@ -8,6 +8,11 @@ struct vector {
 	int size;
 };
 
+struct ivector {
+	int* num;
+	int size;
+};
+
 struct string {
 	char *str;
 	int size;
@@ -19,6 +24,13 @@ int vector_addstr(struct vector* sm, struct string *st);
 int vector_pop(struct vector* sm);
 int vector_popat(struct vector* sm, int index);
 void vector_free(struct vector* sm);
+
+
+void ivector_init(struct ivector* sm);
+int ivector_add(struct ivector* sm, int num);
+int ivector_pop(struct ivector* sm);
+int ivector_popat(struct ivector* sm, int index);
+void ivector_free(struct ivector* sm);
 
 
 void string_init(struct string* st);

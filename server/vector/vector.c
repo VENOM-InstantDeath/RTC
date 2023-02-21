@@ -31,7 +31,7 @@ int vector_addstr(struct vector* sm, struct string *st) {
 int vector_pop(struct vector* sm) {
 	if (sm->size == 0) {return -1;}
 	sm->size--;
-	sm->str = realloc(sm->str, 51*sm->size);
+	sm->str = realloc(sm->str, sizeof(char*)*sm->size);
 	return 0;
 }
 
@@ -42,11 +42,43 @@ int vector_popat(struct vector* sm, int index) {
 		sm->str[i-1] = sm->str[i];
 	}
 	sm->size--;
-	sm->str = realloc(sm->str, 51*sm->size);
+	sm->str = realloc(sm->str, sizeof(char*)*sm->size);
 	return 0;
 }
 
 void vector_free(struct vector* sm) {free(sm->str);}
+
+void ivector_init(struct ivector* sm) {
+	sm->num = malloc(sizeof(int));
+	sm->size=0;
+}
+
+int ivector_add(struct ivector* sm, int num) {
+	sm->num = realloc(sm->num, sizeof(int)*sm->size+1);
+	sm->num[sm->size] = num;
+	sm->size++;
+	return 0;
+}
+
+int ivector_pop(struct ivector* sm) {
+	if (sm->size == 0) {return -1;}
+	sm->size--;
+	sm->num = realloc(sm->num, sizeof(int)*sm->size);
+	return 0;
+}
+
+int ivector_popat(struct ivector* sm, int index) {
+	if (sm->size == 0) {return -1;}
+	if (index >= sm->size || index < 0) {return -1;}
+	for (int i=index+1;i<sm->size;i++) {
+		sm->num[i-1] = sm->num[i];
+	}
+	sm->size--;
+	sm->num = realloc(sm->num, sizeof(int)*sm->size);
+	return 0;
+}
+
+void ivector_free(struct ivector* sm) {free(sm->num);}
 
 void string_init(struct string* st) {
 	st->str = calloc(1,1);
