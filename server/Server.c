@@ -13,6 +13,7 @@
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <sys/prctl.h>
+#include "linked/linked.h"
 #include "vector/vector.h"
 
 struct argst {
@@ -59,16 +60,9 @@ void *communicator(void* vargs) {
 				int index = args->cmvr->addr.size;  // no es necesario aún, pero queda ahí por las dudas
 				vector_add(&(args->cmvr->addr), vec.str[0]);
 				vector_add(&(args->cmvr->code), codebuff);
+				ivector_add(&(args->cmvr->fd), sockfd);
 				printf("Communicator generated the code: %s\n", codebuff);
 				write(sockfd, codebuff, 6);
-				/*Ahora se envió el código y la dirección y el código están registrados.*/
-				/*Ahora debería enviarle el OK al hostfn. Pero para enviarle el OK tiene
-				 * que poder detectar que alguien usó join-session.
-				 * Otro communicator tiene que hablarle a este communicator, pero eso no
-				 * es posible.
-				 * Tal vez el communicator que recibe el join pueda enviar el OK, sólo tengo
-				 * que hacer que pueda acceder al socket correspondiente, tengo que hacer
-				 * todos los fd públicos para los communicators.*/
 			}
 			if (!strcmp(vec.str[1], "join-session")) {
 				if (vec.size < 3) {
@@ -81,15 +75,36 @@ void *communicator(void* vargs) {
 					if (!strcmp(vec.str[2], args->cmvr->code.str[i])) {
 						int fd = args->cmvr->fd.num[i];
 						printf("From communicator. Code is correct, fd is %d\n", fd);
-						write(fd,"OK",2);
-						write(sockfd,"1",1);
+						char* thisfd = malloc(4);
+						sprintf(thisfd, "%d", sockfd);
+						write(fd,thisfd,2); // Para el host
+						sprintf(thisfd, "%d", fd);
+						write(sockfd,thisfd,1); // Para el guest
+						free(thisfd);
 						ctrl = 1;
 					}
 				}
 				if (!ctrl) write(sockfd, "0", 1);
 			}
+			if (!strcmp(vec.str[1], "ping-pong")) {
+				puts("From communicator. ping-pong mode enabled");
+			}
 		}
 		free(buffer);
+	}
+}
+
+void* hostth(void *arg) {
+	int *fd = (int*)arg;
+	fd_set readfd;
+	FD_ZERO(&readfd);
+	FD_SET(fd[1], &readfd);
+	while (1) {
+		char *buffer = calloc(10,1);
+		int selerr = pselect(fd[1]+1, &readfd, NULL, NULL, NULL, NULL);
+		if (selerr) {
+			puts("From host's thread. Data available!");
+		}
 	}
 }
 
@@ -97,22 +112,67 @@ void hostfn(int sockfd, int uxsfd) {
 	puts("hostfn instance started");
 	fd_set readfd;
 	FD_ZERO(&readfd);
-	FD_SET(sockfd, &readfd);
-	/* Primero tiene que recibir el OK del socket del guest.
-	 * Enviará el OK luego de comprobar que el código corresponde
-	 * a una sesión activa de RTC. */
+	FD_SET(uxsfd, &readfd);
+	char *buffer = malloc(5);
+	int opfd;
+	int selerr = pselect(uxsfd+1, &readfd, NULL, NULL, NULL, NULL);
+	if (selerr) {
+		puts("From hostfn (stage 1). Data available!");
+		read(uxsfd, buffer, 5);  /*Debería recibir un comando. Aún no, primero el OK*/
+		opfd = atoi(buffer)
+		free(buffer);
+		puts("From hostfn. Received guestfd from communicator. Continuing to stage 2..");
+		break;
+	}
+	pthread_t th;
+	int fdarr[2] = {sockfd, uxsfd};
+	pthread_create(&th, NULL, hostth, fdarr);
+	free(buffer);
+	FD_ZERO(&readfd);FD_SET(sockfd, &readfd);
 	while (1) {
-		char *buffer = calloc(3,1);
+		char *buffer = calloc(10,1);
 		int selerr = pselect(sockfd+1, &readfd, NULL, NULL, NULL, NULL);
 		if (selerr) {
-			puts("From hostfn. Data available!");
-			read(sockfd, buffer, 3);  /*Debería recibir un comando. Aún no, primero el OK*/
+			puts("From hostfn (stage 2). Data available!");
+			read(sockfd, buffer, 10);
+			/*After reading from host's socket, then you write to uxsfd*/
 		}
 		free(buffer);
 	}
 }
 
-void guestfn(int sockfd, int uxsfd) {}
+void* guestth(void *arg) {
+	int *fd = (int*)arg;
+	fd_set readfd;
+	FD_ZERO(&readfd);
+	FD_SET(fd[1], &readfd);
+	while (1) {
+		char *buffer = calloc(10,1);
+		int selerr = pselect(fd[1]+1, &readfd, NULL, NULL, NULL, NULL);
+		if (selerr) {
+			puts("From guest's thread. Data available!");
+		}
+	}
+}
+
+void guestfn(int sockfd, int uxsfd, int opfd) {
+	puts("guestfn instance started");
+	pthread_t th;
+	int fdarr[2] = {sockfd, uxsfd};
+	pthread_create(&th, NULL, hostth, fdarr);
+	fd_set readfd;
+	FD_ZERO(&readfd);
+	FD_SET(sockfd, &readfd);
+	while (1) {
+		char *buffer = calloc(10,1);
+		int selerr = pselect(sockfd+1, &readfd, NULL, NULL, NULL, NULL);
+		if (selerr) {
+			puts("From guestfn. Data available!");
+			read(sockfd, buffer, 10);
+			/*After reading from guest's socket, then you write to uxsfd*/
+		}
+	}
+}
 
 void *threadfm(void *arg) {
 	struct argst *args = (struct argst*)arg;
@@ -168,14 +228,14 @@ void *threadfm(void *arg) {
 				sprintf(temp, "%s|join-session|%s", address, code);
 				write(uxsfd, temp, 38);
 				free(temp);
-				char* resp = malloc(1);
-				read(uxsfd, resp, 1);
-				if (resp[0] == '1') {
-					write(sockfd, "1", 1);
-					guestfn(sockfd, uxsfd);
-				}
-				else {
+				char* resp = malloc(5);
+				read(uxsfd, resp, 5);
+				int opfd = atoi(resp)
+				if (opfd == 0) {
 					write(sockfd, "0", 1);
+				} else {
+					write(sockfd, "1", 1);
+					guestfn(sockfd, uxsfd, opfd);
 				}
 				free(resp);
 			}
@@ -213,7 +273,7 @@ int main() {
 		while (1) {
 			struct argsc *args = malloc(sizeof(struct argsc));
 			int confd = accept(fd, (struct sockaddr*)&addr, (socklen_t*)&size);
-			printf("From child. Connection accepted and confd is %d\n", confd);
+			puts("From child. Connection accepted");
 			args->cmvr = &commvar;
 			args->sockfd = confd;
 			pthread_t T;
@@ -235,7 +295,6 @@ int main() {
 		int confd = accept(sockfd, (struct sockaddr*)&address, (socklen_t*)&addrlen);
 		char* buff = malloc(20);
 		printf("New connection from: %s\n", inet_ntop(AF_INET, &(address.sin_addr), buff, INET_ADDRSTRLEN));
-		printf("confd is %d", confd);
 		pthread_t T;
 		struct argst *args = malloc(sizeof(struct argst));
 		args->strs = buff;
