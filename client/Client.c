@@ -13,10 +13,14 @@ const char *VERSION = "v1.0.0";
 
 
 int host(WINDOW* win, int* wcaps, void* data) {
+	/*Create newwin with same wcaps as the main one
+	 * Delete before function termination*/
 	return 1;
 }
 
 int guest(WINDOW* win, int* wcaps, void* data) {
+	/*Create newwin with same wcaps as the main one
+	 * Delete before function termination*/
 	return 1;
 }
 
@@ -71,6 +75,8 @@ void wr_optselect(WINDOW* win, int* wcaps, struct optst opts, int mode, int* mda
 	wrefresh(win);
 }
 
+int exitf(WINDOW* win, int* wcaps, void* data) { endwin();exit(0); }
+
 int main() {
 	WINDOW* stdscr = initscr();
 	int y, x; getmaxyx(stdscr, y,x);
@@ -107,11 +113,11 @@ int main() {
 	wrefresh(selectwin);
 	int wcaps[4] = {3, 20, 3, wx/2-10};
 	struct optst opts;
-	const char* tmpopts[2] = {"Host", "Guest"};
-	int (*tmpfunc[2])(WINDOW*, int*, void*) = {tickf, tickf};
+	const char* tmpopts[3] = {"Host", "Guest", "Exit"};
+	int (*tmpfunc[3])(WINDOW*, int*, void*) = {host, guest, exitf};
 	opts.opt = tmpopts;
 	opts.func = tmpfunc;
-	opts.size = 2;
+	opts.size = 3;
 	struct bindst bindings; bindings.size = 0;
 	int colors[2] = {2, 1};
 	while (1) {
