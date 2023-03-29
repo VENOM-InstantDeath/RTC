@@ -44,14 +44,23 @@ void *communicator(void* vargs) {
 	fd_set readfd;
 	FD_ZERO(&readfd);
 	FD_SET(sockfd, &readfd);
+	int pp=0;
 	while (1) {
 		char *buffer = calloc(50,1);
 		int selerr = pselect(sockfd+1, &readfd, NULL, NULL, NULL, NULL);
 		if (selerr) {
 			read(sockfd, buffer, 50);
-			if (!strlen(buffer)) {free(buffer);break;}
+			if (!strlen(buffer)) {printf("free 53 %p\n", buffer);free(buffer);break;}
 			printf("From communicator. Data is %s\n", buffer);
 			struct vector vec = string_split(buffer, '|');
+			if (pp) {
+				int opfd = atoi(vec.str[0]);
+				write(opfd, vec.str[1], 1);
+				/**/
+				printf("free 61 %p\n", buffer);
+				free(buffer);
+				continue;
+			}
 			if (!strcmp(vec.str[1], "start-session")) {
 				puts("Communicator start-session.");
 				int code = randint(11111, 99999);
@@ -67,6 +76,8 @@ void *communicator(void* vargs) {
 			if (!strcmp(vec.str[1], "join-session")) {
 				if (vec.size < 3) {
 					write(sockfd, "0", 1);
+					printf("free 81 %p\n", buffer);
+					free(buffer);
 					continue;
 				}
 				char* code = vec.str[2];
@@ -88,6 +99,7 @@ void *communicator(void* vargs) {
 			}
 			if (!strcmp(vec.str[1], "ping-pong")) {
 				puts("From communicator. ping-pong mode enabled");
+				pp = 1;
 			}
 		}
 		free(buffer);
@@ -95,63 +107,95 @@ void *communicator(void* vargs) {
 }
 
 void* hostth(void *arg) {
-	int *fd = (int*)arg;
+	int *fd = (int*)arg; /*{sockfd, uxsfd}*/
+	int sockfd = fd[0];
+	int uxsfd = fd[1];
 	fd_set readfd;
 	FD_ZERO(&readfd);
-	FD_SET(fd[1], &readfd);
+	FD_SET(uxsfd, &readfd);
 	while (1) {
-		char *buffer = calloc(10,1);
-		int selerr = pselect(fd[1]+1, &readfd, NULL, NULL, NULL, NULL);
+		char *buffer = malloc(1);
+		int selerr = pselect(uxsfd+1, &readfd, NULL, NULL, NULL, NULL);
 		if (selerr) {
 			puts("From host's thread. Data available!");
+			read(uxsfd, buffer, 1);
+			if (!strlen(buffer)) {
+				puts("From host's thread. Detected socket disconnection.");
+				free(buffer);return NULL;
+			}
+			printf("From host's thread. Received this: '%s'\n", buffer);
+			write(sockfd, buffer, 1);
 		}
+		free(buffer);
 	}
 }
 
 void hostfn(int sockfd, int uxsfd) {
 	puts("hostfn instance started");
+	char *okbuff = malloc(2);
 	fd_set readfd;
-	FD_ZERO(&readfd);
-	FD_SET(uxsfd, &readfd);
+	FD_ZERO(&readfd);FD_SET(sockfd, &readfd);
+	pselect(sockfd+1, &readfd, NULL, NULL, NULL, NULL);
+	read(sockfd, okbuff, 2);
+	FD_ZERO(&readfd);FD_SET(uxsfd, &readfd);
 	char *buffer = malloc(5);
 	int opfd;
 	int selerr = pselect(uxsfd+1, &readfd, NULL, NULL, NULL, NULL);
 	if (selerr) {
 		puts("From hostfn (stage 1). Data available!");
 		read(uxsfd, buffer, 5);  /*Debería recibir un comando. Aún no, primero el OK*/
-		opfd = atoi(buffer)
-		free(buffer);
+		opfd = atoi(buffer);
 		puts("From hostfn. Received guestfd from communicator. Continuing to stage 2..");
-		break;
 	}
-	pthread_t th;
-	int fdarr[2] = {sockfd, uxsfd};
-	pthread_create(&th, NULL, hostth, fdarr);
 	free(buffer);
+	write(sockfd, "OK", 2);
+	FD_ZERO(&readfd);FD_SET(sockfd, &readfd);
+	pselect(sockfd+1, &readfd, NULL, NULL, NULL, NULL);
+	read(sockfd, okbuff, 2); free(okbuff);
+	int fdarr[2] = {sockfd, uxsfd};
+	write(uxsfd, "x|ping-pong", 11);
+	pthread_t th;
+	pthread_create(&th, NULL, hostth, fdarr);
 	FD_ZERO(&readfd);FD_SET(sockfd, &readfd);
 	while (1) {
-		char *buffer = calloc(10,1);
+		char *buffer = malloc(1);
 		int selerr = pselect(sockfd+1, &readfd, NULL, NULL, NULL, NULL);
 		if (selerr) {
 			puts("From hostfn (stage 2). Data available!");
-			read(sockfd, buffer, 10);
+			read(sockfd, buffer, 1);
 			/*After reading from host's socket, then you write to uxsfd*/
+			/*opfd|char*/
+			char *msg = calloc(6,1);
+			sprintf(msg, "%d|%s", opfd, buffer);
+			write(uxsfd, msg, 6);
+			free(msg);
 		}
 		free(buffer);
 	}
 }
 
 void* guestth(void *arg) {
-	int *fd = (int*)arg;
+	int *fd = (int*)arg; /*{sockfd, uxsfd}*/
+	int sockfd = fd[0];
+	int uxsfd = fd[1];
 	fd_set readfd;
 	FD_ZERO(&readfd);
-	FD_SET(fd[1], &readfd);
+	FD_SET(uxsfd, &readfd);
 	while (1) {
-		char *buffer = calloc(10,1);
-		int selerr = pselect(fd[1]+1, &readfd, NULL, NULL, NULL, NULL);
+		char *buffer = malloc(1);
+		int selerr = pselect(uxsfd+1, &readfd, NULL, NULL, NULL, NULL);
 		if (selerr) {
 			puts("From guest's thread. Data available!");
+			read(uxsfd, buffer, 1);
+			if (!strlen(buffer)) {
+				puts("From guest's thread. Detected socket disconnection.");
+				printf("free 195 %p\n", buffer);
+				free(buffer);return NULL;
+			}
+			printf("From guest's thread. Received this: '%s'\n", buffer);
+			write(sockfd, buffer, 1);
 		}
+		free(buffer);
 	}
 }
 
@@ -159,6 +203,7 @@ void guestfn(int sockfd, int uxsfd, int opfd) {
 	puts("guestfn instance started");
 	pthread_t th;
 	int fdarr[2] = {sockfd, uxsfd};
+	write(uxsfd, "x|ping-pong", 11);
 	pthread_create(&th, NULL, hostth, fdarr);
 	fd_set readfd;
 	FD_ZERO(&readfd);
@@ -170,7 +215,14 @@ void guestfn(int sockfd, int uxsfd, int opfd) {
 			puts("From guestfn. Data available!");
 			read(sockfd, buffer, 10);
 			/*After reading from guest's socket, then you write to uxsfd*/
+			char *msg = calloc(6,1);
+			sprintf(msg, "%d|%s", opfd, buffer);
+			write(uxsfd, msg, 6);
+			printf("free 225 %p\n", msg);
+			free(msg);
 		}
+		printf("free 228 %p\n", buffer);
+		free(buffer);
 	}
 }
 
@@ -199,7 +251,11 @@ void *threadfm(void *arg) {
 			struct json_object *jobj, *key;
 			jobj = json_tokener_parse(buffer);
 			puts(json_object_to_json_string_ext(jobj, JSON_C_TO_STRING_PRETTY));
-			json_object_object_get_ex(jobj, "request", &key);
+			int keyexist = json_object_object_get_ex(jobj, "request", &key);
+			if (!keyexist) {
+				puts("From threadfm. Manually disconnecting socket due to invalid request.");
+				free(buffer);break;
+			}
 			const char* req = json_object_get_string(key);
 			//uxs: ip|request|arguments   ip|start-session ; ip|join-session|code
 			if (!strcmp(req, "start-session")) {
@@ -213,10 +269,10 @@ void *threadfm(void *arg) {
 				free(temp);
 				/*receive request*/
 				read(uxsfd, resp, 6);
-				char* msg = malloc(16);
-				sprintf(msg, "{\"code\": %s}", resp);
+				char* msg = malloc(18);
+				sprintf(msg, "{\"code\": \"%s\"}", resp);
 				printf("From threadfm. Received this from communicator: %s\n", resp);
-				write(sockfd, msg, 15);
+				write(sockfd, msg, 18);
 				free(resp);free(msg);
 				hostfn(sockfd, uxsfd);
 			}
@@ -230,7 +286,7 @@ void *threadfm(void *arg) {
 				free(temp);
 				char* resp = malloc(5);
 				read(uxsfd, resp, 5);
-				int opfd = atoi(resp)
+				int opfd = atoi(resp);
 				if (opfd == 0) {
 					write(sockfd, "0", 1);
 				} else {
