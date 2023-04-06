@@ -143,7 +143,7 @@ void hostfn(int sockfd, int uxsfd) {
 	int selerr = pselect(uxsfd+1, &readfd, NULL, NULL, NULL, NULL);
 	if (selerr) {
 		puts("From hostfn (stage 1). Data available!");
-		read(uxsfd, buffer, 5);  /*Debería recibir un comando. Aún no, primero el OK*/
+		read(uxsfd, buffer, 5);  /*Debería recibir un comando. Aún no, primero el guestfd (opfd)*/
 		opfd = atoi(buffer);
 		puts("From hostfn. Received guestfd from communicator. Continuing to stage 2..");
 	}
@@ -152,17 +152,21 @@ void hostfn(int sockfd, int uxsfd) {
 	FD_ZERO(&readfd);FD_SET(sockfd, &readfd);
 	pselect(sockfd+1, &readfd, NULL, NULL, NULL, NULL);
 	read(sockfd, okbuff, 2); free(okbuff);
-	int fdarr[2] = {sockfd, uxsfd};
+	int fdarr[3] = {sockfd, uxsfd};
 	write(uxsfd, "x|ping-pong", 11);
 	pthread_t th;
 	pthread_create(&th, NULL, hostth, fdarr);
 	FD_ZERO(&readfd);FD_SET(sockfd, &readfd);
 	while (1) {
-		char *buffer = malloc(1);
+		char *buffer = calloc(1,1);
 		int selerr = pselect(sockfd+1, &readfd, NULL, NULL, NULL, NULL);
 		if (selerr) {
 			puts("From hostfn (stage 2). Data available!");
 			read(sockfd, buffer, 1);
+			if (*buffer == 0) {
+				puts("EMPTY");
+				free(buffer); break;
+			}
 			/*After reading from host's socket, then you write to uxsfd*/
 			/*opfd|char*/
 			char *msg = calloc(6,1);
@@ -189,7 +193,6 @@ void* guestth(void *arg) {
 			read(uxsfd, buffer, 1);
 			if (!strlen(buffer)) {
 				puts("From guest's thread. Detected socket disconnection.");
-				printf("free 195 %p\n", buffer);
 				free(buffer);return NULL;
 			}
 			printf("From guest's thread. Received this: '%s'\n", buffer);
@@ -218,10 +221,8 @@ void guestfn(int sockfd, int uxsfd, int opfd) {
 			char *msg = calloc(6,1);
 			sprintf(msg, "%d|%s", opfd, buffer);
 			write(uxsfd, msg, 6);
-			printf("free 225 %p\n", msg);
 			free(msg);
 		}
-		printf("free 228 %p\n", buffer);
 		free(buffer);
 	}
 }
