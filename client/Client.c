@@ -21,6 +21,9 @@
 #include <signal.h>
 
 const char *VERSION = "v1.0.0";
+int SOCKFD, PID, MASTERFD, SLAVEFD;
+struct termios tty, old;
+struct winsize win;
 
 struct argst {
 	void *data;
@@ -39,6 +42,39 @@ void debug(const char* str) {
 	fclose(f);
 }
 
+void parse_size(char* chws, int *winsz) {
+	int c1 = 0, c2 = 0;
+	char *c1s = calloc(4,1);
+	for (int i=0; i<strlen(chws); i++) {
+		if (chws[i] == ';') {
+			winsz[c1] = atoi(c1s);
+			c1s = calloc(4,1);
+			c1++; c2 = 0;
+			continue;
+		}
+		c1s[c2] = chws[i]; c2++;
+	}
+	winsz[c1] = atoi(c1s);
+	win.ws_row = winsz[0]; win.ws_col = winsz[1];
+	printf("winsz %d;%d\n", win.ws_row, win.ws_col);
+}
+
+void cexit(int sig) {/*Received SIGCHLD*/ exit(0);}
+
+void winch(int sig) { /*Received SIGWINCH*/
+	struct winsize wins;
+	ioctl(1, TIOCGWINSZ, &wins);
+	char ws[9] = {0};
+	sprintf(ws, "%d;%d", wins.ws_row, wins.ws_col);
+	int k = htonl(410);
+	write(sockfd, &k, sizeof(k));
+	write(sockfd, ws, 9);
+	fd_set readfd;
+	FD_ZERO(&readfd); FD_SET(sockfd, &readfd);
+	pselect(sockfd+1, &readfd, NULL, NULL, NULL, NULL);
+	read(sockfd, ws, 2);
+}
+
 int host_lan(WINDOW* win, int* wcaps, void* data) {
 	struct argst *argdata = (struct argst*)data;
 	int **_data = (int**)argdata->data;
@@ -49,41 +85,66 @@ void* hostth(void* args) {
 	/* args: int sockfd*/
 	struct argst *argdata = (struct argst*)args;
 	int sockfd = *((int*)argdata->data);
-	int *ptyfd = (int*)argdata->addata;
-	int masterfd = ptyfd[0]; int slavefd = ptyfd[1];
+	MASTERFD = open("/dev/ptmx", O_RDWR);
+	grantpt(MASTERFD); unlockpt(MASTERFD);
+	SLAVEFD = open(ptsname(MASTERFD), O_RDWR);
+	fd_set readfd;
+	FD_ZERO(&readfd); FD_SET(sockfd, &readfd);
+	pselect(sockfd+1, &readfd, NULL, NULL, NULL, NULL);
+	int winsz[2];
+	char chws[9] = {0};
+	read(sockfd, chws, 9);
+	write(sockfd, "OK", 2);
+	parse_size(chws, winsz);
 	pid_t pid = fork();
 	if (!pid) {
 		close(0);close(1);close(2);
-		dup2(slavefd,0);dup2(slavefd,1);dup2(slavefd,2);
+		dup2(SLAVEFD, 0);
+		dup2(SLAVEFD, 1);
+		dup2(SLAVEFD, 2);
 		prctl(PR_SET_PDEATHSIG, SIGKILL);
+		ioctl(1, TIOCSWINSZ, &win);
 		setsid();
-		ioctl(slavefd, TIOCSCTTY, 1);
-		struct termios tty, old;
-		tcgetattr(0, &old);
-		tty = old;
-		tty.c_cc[VTIME]=0;tty.c_cc[VMIN]=1;
-		tty.c_lflag &= ~(ECHO | ICANON);
+		ioctl(SLAVEFD, TIOCSCTTY, 1);
+		struct termios tty;
+		tcgetattr(0, &tty);
+		tty.c_lflag &= ~(ICANON);
+		tty.c_cc[VTIME] = 0; tty.c_cc[VMIN] = 1;
 		tcsetattr(0, TCSADRAIN, &tty);
-		execlp("bash", NULL);
-		/* IF ERROR HERE, CANCEL EVERYTHING. */
+		execl("/usr/bin/bash", "bash", "-i", NULL);
+		/*puts("Error in forked process.");*/
+		exit(1);
 	}
-	fd_set readfd;
-	FD_ZERO(&readfd); FD_SET(sockfd, &readfd); FD_SET(slavefd, &readfd);
-	int maxfd = (sockfd>slavefd) ? sockfd : slavefd;
+	FD_ZERO(&readfd); FD_SET(MASTERFD, &readfd); FD_SET(sockfd, &readfd);
+	signal(SIGCHLD, cexit);
+	int maxfd = (sockfd > MASTERFD) ? sockfd : MASTERFD;
 	while (1) {
-		char *buff = calloc(1,1);
-		pselect(maxfd+1, &readfd, NULL, NULL, NULL, NULL);
-		if (FD_ISSET(slavefd, &readfd)) {
-			read(slavefd, buff, 1);
-			write(sockfd, buff, 1);
+		int res = pselect(maxfd+1, &readfd, NULL, NULL, NULL, NULL);
+		int *c = calloc(1,sizeof(int));
+		if (FD_ISSET(MASTERFD, &readfd)) {
+			read(MASTERFD, c, 1);
+			write(sockfd, c, 1);
+			fflush(stdout);
 			FD_SET(sockfd, &readfd);
 		}
-		if (FD_ISSET(sockfd, &readfd)) {
-			read(sockfd, buff, 1);
-			write(masterfd, buff, 1);
-			FD_SET(slavefd, &readfd);
+		else if (FD_ISSET(sockfd, &readfd)) {
+			read(sockfd, c, sizeof(int));
+			*c = ntohl(*c);
+			/*printf("Data from sockfd  -  %d\n", *c);*/
+			if (*c == 410) {
+				/*Resize term*/
+				int winsz[2];
+				char chws[9] = {0};
+				read(sockfd, chws, 9);
+				write(sockfd, "OK", 2);
+				parse_size(chws, winsz);
+				ioctl(SLAVEFD, TIOCSWINSZ, &win);
+			} else {
+				write(MASTERFD, c, 1);
+			}
+			FD_SET(MASTERFD, &readfd);
 		}
-		free(buff);
+		free(c);
 	}
 }
 
@@ -142,14 +203,9 @@ int host(WINDOW* win, int* wcaps, void* data) {
 	wattroff(nwin, COLOR_PAIR(2));
 	wrefresh(nwin);
 	/* Launch a thread doing the actual task. If the button is pressed in main thread, disconnect and close socket and kill thread.*/
-	/* The thread is going to handle the PTY. */
-	int masterfd = open("/dev/ptmx", O_RDWR);
-	grantpt(masterfd);
-	unlockpt(masterfd);
-	int slavefd = open(ptsname(masterfd), O_RDWR);
-	int fdarr[2] = {masterfd, slavefd};
+	/* The thread is going to handle the PTY. */	
 	argdata->data = &sockfd;
-	argdata->addata = fdarr;
+	/*argdata->addata = fdarr;*/
 	pthread_t hth;
 	pthread_create(&hth, NULL, hostth, argdata);
 	wgetch(nwin);
@@ -164,7 +220,7 @@ int guest(WINDOW* stdscr, WINDOW* win, char* code) {
 	address.sin_port = htons(4444);
 	inet_pton(AF_INET, "127.0.0.1", &(address.sin_addr));
 	socklen_t addrlen = sizeof(address);
-	int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+	SOCKFD = socket(AF_INET, SOCK_STREAM, 0);
 	connect(sockfd, (struct sockaddr*)&address, addrlen);
 	/* Send the request */
 	char request[45];
@@ -177,6 +233,46 @@ int guest(WINDOW* stdscr, WINDOW* win, char* code) {
 		return 1;
 	}
 	/* Focus standard screen, that is were the action is going to take place. */
+	touchwin(stdscr);
+	wrefresh(stdscr);
+	struct winsize winsz;
+	ioctl(1, TIOCGWINSZ, &winsz);
+	char ws[9] = {0};
+	sprintf(ws, "%d;%d", winsz.ws_row, winsz.ws_col);
+	write(sockfd, ws, 9);
+	fd_set readfd;
+	FD_ZERO(&readfd); FD_SET(sockfd, &readfd);
+	pselect(sockfd+1, &readfd, NULL, NULL, NULL, NULL);
+	read(sockfd, ws, 2);
+	struct termios tty, old;
+	tcgetattr(0,&old);
+	tty = old;
+	tty.c_cc[VTIME] = 0; tty.c_cc[VMIN] = 1;
+	tty.c_iflag &= ~(IXON);
+	tty.c_iflag &= (IGNCR);
+	tty.c_lflag &= ~(ECHO | ICANON | ISIG);
+	tcsetattr(0, TCSADRAIN, &tty);
+	signal(SIGWINCH, winch);
+	FD_ZERO(&readfd); FD_SET(0, &readfd); FD_SET(sockfd, &readfd);
+	while (1) {
+		int res = pselect(sockfd+1, &readfd, NULL, NULL, NULL, NULL);
+		int *c = calloc(1,1);
+		if (FD_ISSET(sockfd, &readfd)) {
+			read(sockfd, c, 1);
+			if (*c == 0) break;
+			printf("%c", *c);
+			fflush(stdout);
+			FD_SET(0, &readfd);
+		}
+		else if (FD_ISSET(0, &readfd)) {
+			read(0, c, 1);
+			int conv = htonl(*c);
+			write(sockfd, &conv, sizeof(conv));
+			FD_SET(sockfd, &readfd);
+		}
+		free(c);
+	}
+	tcsetattr(0, TCSADRAIN, &old);
 	return 1;
 }
 
