@@ -1,3 +1,4 @@
+#define _XOPEN_SOURCE 600
 #include <stdio.h>
 #include <stdlib.h>
 #include <ncurses.h>
@@ -5,6 +6,8 @@
 #include <json.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <termios.h>
+#include <pthread.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -42,6 +45,48 @@ int host_lan(WINDOW* win, int* wcaps, void* data) {
 	return 0;
 }
 
+void* hostth(void* args) {
+	/* args: int sockfd*/
+	struct argst *argdata = (struct argst*)args;
+	int sockfd = *((int*)argdata->data);
+	int *ptyfd = (int*)argdata->addata;
+	int masterfd = ptyfd[0]; int slavefd = ptyfd[1];
+	pid_t pid = fork();
+	if (!pid) {
+		close(0);close(1);close(2);
+		dup2(slavefd,0);dup2(slavefd,1);dup2(slavefd,2);
+		prctl(PR_SET_PDEATHSIG, SIGKILL);
+		setsid();
+		ioctl(slavefd, TIOCSCTTY, 1);
+		struct termios tty, old;
+		tcgetattr(0, &old);
+		tty = old;
+		tty.c_cc[VTIME]=0;tty.c_cc[VMIN]=1;
+		tty.c_lflag &= ~(ECHO | ICANON);
+		tcsetattr(0, TCSADRAIN, &tty);
+		execlp("bash", NULL);
+		/* IF ERROR HERE, CANCEL EVERYTHING. */
+	}
+	fd_set readfd;
+	FD_ZERO(&readfd); FD_SET(sockfd, &readfd); FD_SET(slavefd, &readfd);
+	int maxfd = (sockfd>slavefd) ? sockfd : slavefd;
+	while (1) {
+		char *buff = calloc(1,1);
+		pselect(maxfd+1, &readfd, NULL, NULL, NULL, NULL);
+		if (FD_ISSET(slavefd, &readfd)) {
+			read(slavefd, buff, 1);
+			write(sockfd, buff, 1);
+			FD_SET(sockfd, &readfd);
+		}
+		if (FD_ISSET(sockfd, &readfd)) {
+			read(sockfd, buff, 1);
+			write(masterfd, buff, 1);
+			FD_SET(slavefd, &readfd);
+		}
+		free(buff);
+	}
+}
+
 int host(WINDOW* win, int* wcaps, void* data) {
 	struct argst *argdata = (struct argst*)data;
 	int **_data = (int**)argdata->data;
@@ -58,7 +103,7 @@ int host(WINDOW* win, int* wcaps, void* data) {
 	struct sockaddr_in address;
 	address.sin_family = AF_INET;
 	address.sin_port = htons(4444);
-	inet_aton("127.0.0.1", &(address.sin_addr));
+	inet_pton(AF_INET, "127.0.0.1", &(address.sin_addr));
 	socklen_t addrlen = sizeof(address);
 	int sockfd = socket(AF_INET, SOCK_STREAM, 0);
 	connect(sockfd, (struct sockaddr*)&address, addrlen);
@@ -89,12 +134,24 @@ int host(WINDOW* win, int* wcaps, void* data) {
 	write(sockfd, "OK", 2);
 	/* Limpia la ventana, informa que la conexión se ha establecido, ofrece un botón para desconectar. */
 	wmove(nwin,0,0);wclrtobot(nwin);
+	wattron(nwin, A_BOLD);
 	mvwaddstr(nwin, 3, wx/2-10, "Connection established");
-	wattron(nwin, COLOR_PAIR(2));
+	wattroff(nwin, A_BOLD);
+	wattron(nwin, COLOR_PAIR(1));
 	mvwaddstr(nwin, 7, wx/2-6, "[Disconnect]");
 	wattroff(nwin, COLOR_PAIR(2));
 	wrefresh(nwin);
 	/* Launch a thread doing the actual task. If the button is pressed in main thread, disconnect and close socket and kill thread.*/
+	/* The thread is going to handle the PTY. */
+	int masterfd = open("/dev/ptmx", O_RDWR);
+	grantpt(masterfd);
+	unlockpt(masterfd);
+	int slavefd = open(ptsname(masterfd), O_RDWR);
+	int fdarr[2] = {masterfd, slavefd};
+	argdata->data = &sockfd;
+	argdata->addata = fdarr;
+	pthread_t hth;
+	pthread_create(&hth, NULL, hostth, argdata);
 	wgetch(nwin);
 	close(sockfd);
 	return 0;
@@ -105,7 +162,7 @@ int guest(WINDOW* stdscr, WINDOW* win, char* code) {
 	struct sockaddr_in address;
 	address.sin_family = AF_INET;
 	address.sin_port = htons(4444);
-	inet_aton("127.0.0.1", &(address.sin_addr));
+	inet_pton(AF_INET, "127.0.0.1", &(address.sin_addr));
 	socklen_t addrlen = sizeof(address);
 	int sockfd = socket(AF_INET, SOCK_STREAM, 0);
 	connect(sockfd, (struct sockaddr*)&address, addrlen);
@@ -119,6 +176,7 @@ int guest(WINDOW* stdscr, WINDOW* win, char* code) {
 		/* You can print some error in red here */
 		return 1;
 	}
+	/* Focus standard screen, that is were the action is going to take place. */
 	return 1;
 }
 
@@ -286,7 +344,6 @@ int main() {
 	init_pair(1, 0, 7);
 	init_pair(2, 7, 20);
 	init_pair(3, 7, 26);
-	/*v1-2-r3-4-t5-6*/
 	WINDOW* introwin = newwin(12, 50, (y/2)-6, (x/2)-25);
 	int wy, wx; getmaxyx(introwin, wy, wx);
 	wrefresh(stdscr);
