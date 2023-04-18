@@ -1,1 +1,5 @@
 comp(){ gcc Client.c menu/menu.c libncread/ncread.c libncread/vector.c -I/usr/include/json-c -ljson-c -lncurses -g -o client; }
+
+comp1(){ gcc Client.c menu/menu.c libncread/ncread.c libncread/vector.c -I/usr/include/json-c -ljson-c -lncurses -lpthread -g -o client; }
+
+comp2(){ gcc Client.c menu/menu.c libncread/ncread.c libncread/vector.c -I/usr/include/json-c -ljson-c -lncurses -pthread -g -o client; }
