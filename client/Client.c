@@ -4,6 +4,7 @@
 #include <ncurses.h>
 #include <string.h>
 #include <json.h>
+#include <wchar.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <termios.h>
@@ -56,23 +57,23 @@ void parse_size(char* chws, int *winsz) {
 	}
 	winsz[c1] = atoi(c1s);
 	win.ws_row = winsz[0]; win.ws_col = winsz[1];
-	printf("winsz %d;%d\n", win.ws_row, win.ws_col);
+	/*printf("winsz %d;%d\n", win.ws_row, win.ws_col);*/
 }
 
 void cexit(int sig) {/*Received SIGCHLD*/ exit(0);}
 
-void winch(int sig) { /*Received SIGWINCH*/
+void swinch(int sig) { /*Received SIGWINCH*/
 	struct winsize wins;
 	ioctl(1, TIOCGWINSZ, &wins);
 	char ws[9] = {0};
 	sprintf(ws, "%d;%d", wins.ws_row, wins.ws_col);
-	int k = htonl(410);
-	write(sockfd, &k, sizeof(k));
-	write(sockfd, ws, 9);
+	int k[1] = {9};
+	write(SOCKFD, k, 1);
+	write(SOCKFD, ws, 9);
 	fd_set readfd;
-	FD_ZERO(&readfd); FD_SET(sockfd, &readfd);
-	pselect(sockfd+1, &readfd, NULL, NULL, NULL, NULL);
-	read(sockfd, ws, 2);
+	FD_ZERO(&readfd); FD_SET(SOCKFD, &readfd);
+	pselect(SOCKFD+1, &readfd, NULL, NULL, NULL, NULL);
+	read(SOCKFD, ws, 2);
 }
 
 int host_lan(WINDOW* win, int* wcaps, void* data) {
@@ -120,31 +121,35 @@ void* hostth(void* args) {
 	int maxfd = (sockfd > MASTERFD) ? sockfd : MASTERFD;
 	while (1) {
 		int res = pselect(maxfd+1, &readfd, NULL, NULL, NULL, NULL);
-		int *c = calloc(1,sizeof(int));
 		if (FD_ISSET(MASTERFD, &readfd)) {
+			int c[1];
 			read(MASTERFD, c, 1);
-			write(sockfd, c, 1);
+			c[0] = htonl(c[0]);
+			char size[1] = {1};
+			write(sockfd, size, 1);
+			write(sockfd, c, sizeof(uint32_t));
 			fflush(stdout);
 			FD_SET(sockfd, &readfd);
 		}
 		else if (FD_ISSET(sockfd, &readfd)) {
-			read(sockfd, c, sizeof(int));
-			*c = ntohl(*c);
-			/*printf("Data from sockfd  -  %d\n", *c);*/
-			if (*c == 410) {
-				/*Resize term*/
+			char size[1];
+			read(sockfd, size, 1);
+			if (size[0] == 1) { /* normal */
+				int *buffer = calloc(1, sizeof(int));
+				read(sockfd, buffer, sizeof(uint32_t));
+				*buffer = ntohl(*buffer);
+				write(MASTERFD, buffer, sizeof(int));
+			} else { /* winch */
+				/*printf("Data from sockfd  -  %d\n", *c);*/
 				int winsz[2];
-				char chws[9] = {0};
-				read(sockfd, chws, 9);
+				char *buffer = calloc(9, 1);
+				read(sockfd, buffer, 9);
 				write(sockfd, "OK", 2);
-				parse_size(chws, winsz);
+				parse_size(buffer, winsz);
 				ioctl(SLAVEFD, TIOCSWINSZ, &win);
-			} else {
-				write(MASTERFD, c, 1);
 			}
 			FD_SET(MASTERFD, &readfd);
 		}
-		free(c);
 	}
 }
 
@@ -221,29 +226,32 @@ int guest(WINDOW* stdscr, WINDOW* win, char* code) {
 	inet_pton(AF_INET, "127.0.0.1", &(address.sin_addr));
 	socklen_t addrlen = sizeof(address);
 	SOCKFD = socket(AF_INET, SOCK_STREAM, 0);
-	connect(sockfd, (struct sockaddr*)&address, addrlen);
+	connect(SOCKFD, (struct sockaddr*)&address, addrlen);
 	/* Send the request */
 	char request[45];
 	sprintf(request, "{\"request\": \"join-session\", \"code\": \"%s\"}", code);
-	write(sockfd,request,45);
+	write(SOCKFD,request,45);
 	char* resp = malloc(1);
-	read(sockfd, resp, 1);
+	read(SOCKFD, resp, 1);
 	if (*resp == '0') {
 		/* You can print some error in red here */
 		return 1;
 	}
 	/* Focus standard screen, that is were the action is going to take place. */
 	touchwin(stdscr);
+	wmove(stdscr, 0, 0);
 	wrefresh(stdscr);
 	struct winsize winsz;
 	ioctl(1, TIOCGWINSZ, &winsz);
 	char ws[9] = {0};
 	sprintf(ws, "%d;%d", winsz.ws_row, winsz.ws_col);
-	write(sockfd, ws, 9);
+	int k[1] = {9};
+	write(SOCKFD, k, 1);
+	write(SOCKFD, ws, 9);
 	fd_set readfd;
-	FD_ZERO(&readfd); FD_SET(sockfd, &readfd);
-	pselect(sockfd+1, &readfd, NULL, NULL, NULL, NULL);
-	read(sockfd, ws, 2);
+	FD_ZERO(&readfd); FD_SET(SOCKFD, &readfd);
+	pselect(SOCKFD+1, &readfd, NULL, NULL, NULL, NULL);
+	read(SOCKFD, ws, 2);
 	struct termios tty, old;
 	tcgetattr(0,&old);
 	tty = old;
@@ -252,25 +260,33 @@ int guest(WINDOW* stdscr, WINDOW* win, char* code) {
 	tty.c_iflag &= (IGNCR);
 	tty.c_lflag &= ~(ECHO | ICANON | ISIG);
 	tcsetattr(0, TCSADRAIN, &tty);
-	signal(SIGWINCH, winch);
-	FD_ZERO(&readfd); FD_SET(0, &readfd); FD_SET(sockfd, &readfd);
+	signal(SIGWINCH, swinch);
+	FD_ZERO(&readfd); FD_SET(0, &readfd); FD_SET(SOCKFD, &readfd);
 	while (1) {
-		int res = pselect(sockfd+1, &readfd, NULL, NULL, NULL, NULL);
-		int *c = calloc(1,1);
-		if (FD_ISSET(sockfd, &readfd)) {
-			read(sockfd, c, 1);
-			if (*c == 0) break;
-			printf("%c", *c);
-			fflush(stdout);
-			FD_SET(0, &readfd);
+		int res = pselect(SOCKFD+1, &readfd, NULL, NULL, NULL, NULL);
+		if (FD_ISSET(SOCKFD, &readfd)) {
+			char size[1];
+			read(SOCKFD, size, 1);
+			if (size[0] == 1) { /* normal */
+				int *buffer = calloc(1,sizeof(int));
+				read(SOCKFD, buffer, sizeof(uint32_t));
+				*buffer = ntohl(*buffer);
+				if (*buffer == 0) break;
+				//wprintf(L"%lc", *buffer);
+				printf("%c", *buffer);
+				fflush(stdout);
+				FD_SET(0, &readfd);
+			}
 		}
 		else if (FD_ISSET(0, &readfd)) {
-			read(0, c, 1);
-			int conv = htonl(*c);
-			write(sockfd, &conv, sizeof(conv));
-			FD_SET(sockfd, &readfd);
+			char size[1] = {1};
+			write(SOCKFD, size, 1);
+			int *c = calloc(1, sizeof(int));
+			read(0, c, sizeof(int));
+			*c = htonl(*c);
+			write(SOCKFD, c, sizeof(uint32_t));
+			FD_SET(SOCKFD, &readfd);
 		}
-		free(c);
 	}
 	tcsetattr(0, TCSADRAIN, &old);
 	return 1;
