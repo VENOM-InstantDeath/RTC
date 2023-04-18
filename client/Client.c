@@ -168,8 +168,8 @@ int host(WINDOW* win, int* wcaps, void* data) {
 	wbkgd(nwin, COLOR_PAIR(2));
 	struct sockaddr_in address;
 	address.sin_family = AF_INET;
-	address.sin_port = htons(4444);
-	inet_pton(AF_INET, "127.0.0.1", &(address.sin_addr));
+	address.sin_port = htons(5555);
+	inet_pton(AF_INET, "152.168.254.87", &(address.sin_addr));
 	socklen_t addrlen = sizeof(address);
 	int sockfd = socket(AF_INET, SOCK_STREAM, 0);
 	connect(sockfd, (struct sockaddr*)&address, addrlen);
