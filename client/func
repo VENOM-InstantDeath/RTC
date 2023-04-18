@@ -1,0 +1,1 @@
+comp(){ gcc Client.c menu/menu.c libncread/ncread.c libncread/vector.c -I/usr/include/json-c -ljson-c -lncurses -g -o client; }
