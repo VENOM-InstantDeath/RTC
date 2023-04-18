@@ -451,11 +451,16 @@ int guestsel(WINDOW* win, int* caps, void* data) {
 int main() {
 	WINDOW* stdscr = initscr();
 	int y, x; getmaxyx(stdscr, y,x);
-	start_color(); use_default_colors();
+	start_color();
 	curs_set(0);
+	int bg[2] = {4, 4};
+	if (strcmp(getenv("TERM"), "linux")) {
+		use_default_colors();
+		bg[0] = 20; bg[1] = 26;
+	}
 	init_pair(1, 0, 7);
-	init_pair(2, 7, 20);
-	init_pair(3, 7, 26);
+	init_pair(2, 7, bg[0]);
+	init_pair(3, 7, bg[1]);
 	WINDOW* introwin = newwin(12, 50, (y/2)-6, (x/2)-25);
 	int wy, wx; getmaxyx(introwin, wy, wx);
 	wrefresh(stdscr);
